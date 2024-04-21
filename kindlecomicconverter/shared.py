@@ -21,6 +21,7 @@
 import os
 from hashlib import md5
 from html.parser import HTMLParser
+import subprocess
 from distutils.version import StrictVersion
 from re import split
 import sys
@@ -101,11 +102,11 @@ def dependencyCheck(level):
     missing = []
     if level > 2:
         try:
-            from PyQt5.QtCore import qVersion as qtVersion
-            if StrictVersion('5.6.0') > StrictVersion(qtVersion()):
-                missing.append('PyQt 5.6.0+')
+            from PySide6.QtCore import qVersion as qtVersion
+            if StrictVersion('6.5.1') > StrictVersion(qtVersion()):
+                missing.append('PySide 6.5.1+')
         except ImportError:
-            missing.append('PyQt 5.6.0+')
+            missing.append('PySide 6.5.1+')
         try:
             import raven
         except ImportError:
@@ -135,3 +136,8 @@ def dependencyCheck(level):
     if len(missing) > 0:
         print('ERROR: ' + ', '.join(missing) + ' is not installed!')
         sys.exit(1)
+
+def subprocess_run_silent(command, **kwargs):
+    if (os.name == 'nt'):
+        kwargs.setdefault('creationflags', subprocess.CREATE_NO_WINDOW)
+    return subprocess.run(command, **kwargs)

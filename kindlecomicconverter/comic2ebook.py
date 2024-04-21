@@ -19,6 +19,8 @@
 #
 
 import os
+import pathlib
+import re
 import sys
 from argparse import ArgumentParser
 from time import strftime, gmtime
@@ -31,16 +33,14 @@ from tempfile import mkdtemp, gettempdir, TemporaryFile
 from shutil import move, copytree, rmtree, copyfile
 from multiprocessing import Pool
 from uuid import uuid4
+from natsort import os_sorted
 from slugify import slugify as slugify_ext
-from PIL import Image
+from PIL import Image, ImageFile
 from subprocess import STDOUT, PIPE
-from psutil import Popen, virtual_memory, disk_usage
+from psutil import virtual_memory, disk_usage
 from html import escape as hescape
-try:
-    from PyQt5 import QtCore
-except ImportError:
-    QtCore = None
-from .shared import md5Checksum, getImageFileName, walkSort, walkLevel, sanitizeTrace
+
+from .shared import md5Checksum, getImageFileName, walkSort, walkLevel, sanitizeTrace, subprocess_run_silent
 from . import comic2panel
 from . import image
 from . import comicarchive
@@ -49,6 +49,8 @@ from . import dualmetafix
 from . import metadata
 from . import kindle
 from . import __version__
+
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 
 def main(argv=None):
@@ -671,11 +673,9 @@ def getOutputFilename(srcpath, wantedname, ext, tomenumber):
         filename = srcpath + tomenumber + ext
     else:
         if 'Ko' in options.profile and options.format == 'EPUB':
-            path = srcpath.split(os.path.sep)
-            path[-1] = ''.join(e for e in path[-1].split('.')[0] if e.isalnum()) + tomenumber + ext
-            if not path[-1].split('.')[0]:
-                path[-1] = 'KCCPlaceholder' + tomenumber + ext
-            filename = os.path.sep.join(path)
+            src = pathlib.Path(srcpath)
+            name = re.sub(r'\W+', '_', src.stem) + tomenumber + ext
+            filename = src.with_name(name)
         else:
             filename = os.path.splitext(srcpath)[0] + tomenumber + ext
     if os.path.isfile(filename):
@@ -689,7 +689,6 @@ def getOutputFilename(srcpath, wantedname, ext, tomenumber):
 
 def getComicInfo(path, originalpath):
     xmlPath = os.path.join(path, 'ComicInfo.xml')
-    options.authors = ['KCC']
     options.chapters = []
     options.summary = ''
     titleSuffix = ''
@@ -701,13 +700,18 @@ def getComicInfo(path, originalpath):
             options.title = os.path.splitext(os.path.basename(originalpath))[0]
     else:
         defaultTitle = False
+    if options.author == 'defaultauthor':
+        defaultAuthor = True
+        options.authors = ['KCC']
+    else:
+        defaultAuthor = False
+        options.authors = [options.author]
     if os.path.exists(xmlPath):
         try:
             xml = metadata.MetadataParser(xmlPath)
         except Exception:
             os.remove(xmlPath)
             return
-        options.authors = []
         if xml.data['Title']:
             options.title = hescape(xml.data['Title'])
         elif defaultTitle:
@@ -718,15 +722,17 @@ def getComicInfo(path, originalpath):
             if xml.data['Number']:
                 titleSuffix += ' #' + xml.data['Number'].zfill(3)
             options.title += titleSuffix
-        for field in ['Writers', 'Pencillers', 'Inkers', 'Colorists']:
-            for person in xml.data[field]:
-                options.authors.append(hescape(person))
-        if len(options.authors) > 0:
-            options.authors = list(set(options.authors))
-            options.authors.sort()
-        else:
-            options.authors = ['KCC']
-        if xml.data['Bookmarks']:
+        if defaultAuthor:    
+            options.authors = []
+            for field in ['Writers', 'Pencillers', 'Inkers', 'Colorists']:
+                for person in xml.data[field]:
+                    options.authors.append(hescape(person))
+            if len(options.authors) > 0:
+                options.authors = list(set(options.authors))
+                options.authors.sort()
+            else:
+                options.authors = ['KCC']
+        if xml.data['Bookmarks'] and options.batchsplit == 0:
             options.chapters = xml.data['Bookmarks']
         if xml.data['Summary']:
             options.summary = hescape(xml.data['Summary'])
@@ -761,7 +767,7 @@ def getPanelViewSize(deviceres, size):
 def sanitizeTree(filetree):
     chapterNames = {}
     for root, dirs, files in os.walk(filetree, False):
-        for i, name in enumerate(sorted(files)):
+        for i, name in enumerate(os_sorted(files)):
             splitname = os.path.splitext(name)
 
             # file needs kcc at front AND back to avoid renaming issues
@@ -964,6 +970,8 @@ def makeParser():
                                 help="Output generated file to specified directory or file")
     output_options.add_argument("-t", "--title", action="store", dest="title", default="defaulttitle",
                                 help="Comic title [Default=filename or directory name]")
+    output_options.add_argument("-a", "--author", action="store", dest="author", default="defaultauthor",
+                                help="Author name [Default=KCC]")
     output_options.add_argument("-f", "--format", action="store", dest="format", default="Auto",
                                 help="Output format (Available options: Auto, MOBI, EPUB, CBZ, KFX, MOBI+EPUB) "
                                      "[Default=Auto]")
@@ -1101,15 +1109,15 @@ def checkTools(source):
     source = source.upper()
     if source.endswith('.CB7') or source.endswith('.7Z') or source.endswith('.RAR') or source.endswith('.CBR') or \
             source.endswith('.ZIP') or source.endswith('.CBZ'):
-        process = Popen('7z', stdout=PIPE, stderr=STDOUT, stdin=PIPE, shell=True)
-        process.communicate()
-        if process.returncode != 0 and process.returncode != 7:
+        try:
+            subprocess_run_silent(['7z'], stdout=PIPE, stderr=STDOUT)
+        except FileNotFoundError:
             print('ERROR: 7z is missing!')
             sys.exit(1)
     if options.format == 'MOBI':
-        kindleGenExitCode = Popen('kindlegen -locale en', stdout=PIPE, stderr=STDOUT, stdin=PIPE, shell=True)
-        kindleGenExitCode.communicate()
-        if kindleGenExitCode.returncode != 0:
+        try:
+            subprocess_run_silent(['kindlegen', '-locale', 'en'], stdout=PIPE, stderr=STDOUT)
+        except FileNotFoundError:
             print('ERROR: KindleGen is missing!')
             sys.exit(1)
 
@@ -1265,10 +1273,9 @@ def makeMOBIWorker(item):
     kindlegenError = ''
     try:
         if os.path.getsize(item) < 629145600:
-            output = Popen('kindlegen -dont_append_source -locale en "' + item + '"',
-                           stdout=PIPE, stderr=STDOUT, stdin=PIPE, shell=True)
-            for line in output.stdout:
-                line = line.decode('utf-8')
+            output = subprocess_run_silent(['kindlegen', '-dont_append_source', '-locale', 'en', item],
+                           stdout=PIPE, stderr=STDOUT, encoding='UTF-8')
+            for line in output.stdout.splitlines():
                 # ERROR: Generic error
                 if "Error(" in line:
                     kindlegenErrorCode = 1
@@ -1279,7 +1286,6 @@ def makeMOBIWorker(item):
                 if kindlegenErrorCode > 0:
                     break
                 if ":I1036: Mobi file built successfully" in line:
-                    output.communicate()
                     break
         else:
             # ERROR: EPUB too big

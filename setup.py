@@ -11,8 +11,8 @@ Create EXE/APP:
 """
 
 import os
+import platform
 import sys
-import shutil
 import setuptools
 import distutils.cmd
 from kindlecomicconverter import __version__
@@ -37,9 +37,9 @@ class BuildBinaryCommand(distutils.cmd.Command):
     def run(self):
         VERSION = __version__
         if sys.platform == 'darwin':
-            os.system('pyinstaller -y -F -i icons/comic2ebook.icns -n "Kindle Comic Converter" -w -s kcc.py')
+            os.system('pyinstaller -y -D -i icons/comic2ebook.icns -n "Kindle Comic Converter" -w -s kcc.py')
             # TODO /usr/bin/codesign --force -s "$MACOS_CERTIFICATE_NAME" --options runtime dist/Applications/Kindle\ Comic\ Converter.app -v
-            os.system('appdmg kcc.json dist/KindleComicConverter_osx_' + VERSION + '.dmg')
+            os.system(f'appdmg kcc.json dist/kcc_macos_{platform.processor()}_{VERSION}.dmg')
             sys.exit(0)
         elif sys.platform == 'win32':
             os.system('pyinstaller -y -F -i icons\\comic2ebook.ico -n KCC_' + VERSION + ' -w --noupx kcc.py')
@@ -75,12 +75,15 @@ setuptools.setup(
     },
     packages=['kindlecomicconverter'],
     install_requires=[
-        'PyQt5>=5.6.0',
+        'pyside6>=6.5.1',
         'Pillow>=5.2.0',
-        'psutil>=5.0.0',
+        'psutil>=5.9.5',
         'python-slugify>=1.2.1,<9.0.0',
         'raven>=6.0.0',
+        'requests>=2.31.0',
         'mozjpeg-lossless-optimization>=1.1.2',
+        'natsort[fast]>=8.4.0',
+        'distro',
     ],
     classifiers=[],
     zip_safe=False,
